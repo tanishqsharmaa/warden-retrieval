@@ -24,15 +24,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging(service_name="warden-retrieval", level=settings.LOG_LEVEL)
     logger.info("Initializing warden-retrieval subsystem dependencies...")
 
-    client_mgr = QdrantClientManager(settings)
+    client_mgr = getattr(app.state, "client_manager", None) or QdrantClientManager(settings)
     qdrant_client = await client_mgr.get_client()
 
     # Ensure collection and payload indexes exist
     await init_qdrant_collection(qdrant_client, settings.QDRANT_COLLECTION)
 
-    search_engine = HybridSearchEngine(qdrant_client, settings.QDRANT_COLLECTION)
-    indexer = BatchIndexer(qdrant_client, settings.QDRANT_COLLECTION)
-    laya_client = SpeculativeLayaClient(target_url=settings.LAYA_GRPC_URL)
+    search_engine = getattr(app.state, "search_engine", None) or HybridSearchEngine(
+        qdrant_client, settings.QDRANT_COLLECTION
+    )
+    indexer = getattr(app.state, "indexer", None) or BatchIndexer(
+        qdrant_client, settings.QDRANT_COLLECTION
+    )
+    laya_client = getattr(app.state, "laya_client", None) or SpeculativeLayaClient(
+        target_url=settings.LAYA_GRPC_URL
+    )
 
     # Initialize and start gRPC server
     servicer = RetrievalServiceServicerImpl(

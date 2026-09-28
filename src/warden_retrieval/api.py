@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel, Field
 from warden_shared.errors import (
     QdrantUnavailableError,
@@ -67,6 +67,7 @@ def create_app(
 
     @app.post("/retrieve")
     async def retrieve_endpoint(
+        request: Request,
         body: RetrieveRequestBody,
         x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
     ) -> dict[str, Any]:
@@ -76,7 +77,9 @@ def create_app(
         if x_user_role not in ALLOWED_ROLES:
             raise RoleInvalidError(detail=f"Role '{x_user_role}' is unauthorized.")
 
-        if search_engine is None or laya_client is None:
+        engine = getattr(request.app.state, "search_engine", None) or search_engine
+        laya = getattr(request.app.state, "laya_client", None) or laya_client
+        if engine is None or laya is None:
             raise QdrantUnavailableError(detail="Retrieval service dependencies not initialized.")
 
         t_total_0 = time.perf_counter()
@@ -85,7 +88,7 @@ def create_app(
 
         # 1. Early-binding hybrid search against Qdrant
         t_search_0 = time.perf_counter()
-        raw_candidates = await search_engine.search(
+        raw_candidates = await engine.search(
             query_text=body.query_text,
             caller_role=x_user_role,
             top_k=top_k,
@@ -104,7 +107,7 @@ def create_app(
         # 3. Speculative Laya cross-encoder rerank
         laya_rerank_ms = 0.0
         if body.enable_reranker and pruned_candidates:
-            rerank_res = await laya_client.rerank(
+            rerank_res = await laya.rerank(
                 query=body.query_text,
                 candidates=pruned_candidates,
                 final_limit=final_limit,
@@ -161,9 +164,12 @@ def create_app(
         }
 
     @app.post("/internal/index")
-    async def index_endpoint(body: IndexBatchRequestBody) -> dict[str, Any]:
+    async def index_endpoint(
+        request: Request, body: IndexBatchRequestBody
+    ) -> dict[str, Any]:
         """Bulk point upsertion endpoint invoked by warden-ingestion."""
-        if indexer is None:
+        idxer = getattr(request.app.state, "indexer", None) or indexer
+        if idxer is None:
             raise QdrantUnavailableError(detail="Indexer dependency not initialized.")
 
         pb_points = [
@@ -180,7 +186,7 @@ def create_app(
             )
             for p in body.points
         ]
-        result = await indexer.index_points(pb_points, wait=body.wait)
+        result = await idxer.index_points(pb_points, wait=body.wait)
         return {
             "status": result.status,
             "points_count": result.points_count,
@@ -189,22 +195,32 @@ def create_app(
         }
 
     @app.get("/health")
-    async def health_endpoint() -> dict[str, Any]:
+    async def health_endpoint(request: Request) -> dict[str, Any]:
         """Health check endpoint probing Qdrant connectivity."""
-        if client_manager is None:
+        client_mgr = getattr(request.app.state, "client_manager", None) or client_manager
+        if client_mgr is None:
             raise QdrantUnavailableError(detail="Qdrant client manager not initialized.")
 
-        is_healthy = await client_manager.is_healthy()
+        is_healthy = await client_mgr.is_healthy()
         if not is_healthy:
             raise QdrantUnavailableError(
                 detail="Qdrant datastore unreachable or collection missing."
             )
+
+        vectors_count = 0
+        try:
+            client = await client_mgr.get_client()
+            col_info = await client.get_collection(cfg.QDRANT_COLLECTION)
+            vectors_count = getattr(col_info, "points_count", 0) or 0
+        except Exception:
+            pass
 
         return {
             "status": "HEALTHY",
             "service": "warden-retrieval",
             "qdrant_connected": True,
             "collection_exists": True,
+            "vectors_count": vectors_count,
             "grpc_server_active": True,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }

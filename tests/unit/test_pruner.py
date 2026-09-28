@@ -59,3 +59,15 @@ def test_prune_zero_or_negative_max_score():
     candidates = [make_candidate(0, 0.0), make_candidate(1, -0.1)]
     pruned = prune_candidates(candidates, prune_ratio=0.40, max_candidates=10)
     assert len(pruned) == 2
+
+def test_prune_unsorted_candidates():
+    candidates = [
+        make_candidate(1, 0.45),
+        make_candidate(0, 1.0),
+        make_candidate(2, 0.80),
+        make_candidate(3, 0.10),
+    ]
+    pruned = prune_candidates(candidates, prune_ratio=0.40, max_candidates=10)
+    assert len(pruned) == 3
+    assert [c.doc_id for c in pruned] == ["DOC-0", "DOC-2", "DOC-1"]
+

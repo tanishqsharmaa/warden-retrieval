@@ -1,3 +1,4 @@
+import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from warden_shared.errors import QdrantUnavailableError
 from warden_shared.proto.v1.retrieval_pb2 import PointData
 
 logger = logging.getLogger("warden.retrieval.indexer")
+
+ALLOWED_ROLES = {"Employee", "Manager", "HR-Admin"}
 
 @dataclass(frozen=True)
 class IndexBatchResult:
@@ -28,6 +31,14 @@ class BatchIndexer:
         """Upserts a batch of vectorized points into the Qdrant collection."""
         if not points:
             return IndexBatchResult(status="UPSERTED", points_count=0, execution_time_ms=0.0)
+
+        # Validate role_tags on all incoming points
+        for p in points:
+            if not set(p.role_tags).issubset(ALLOWED_ROLES):
+                raise ValueError(
+                    f"Invalid role_tags {list(p.role_tags)} for point {p.point_id}. "
+                    f"Allowed: {ALLOWED_ROLES}"
+                )
 
         t0 = time.perf_counter()
         try:
@@ -50,17 +61,28 @@ class BatchIndexer:
                     )
                 )
 
-            upload_res = self.client.upload_points(
-                collection_name=self.collection_name,
-                points=point_structs,
-                batch_size=64,
-                parallel=2,
-                wait=wait,
-                method="grpc",
-            )
-            import inspect
-            if inspect.isawaitable(upload_res):
-                await upload_res
+            # Check if upload_points is async or sync to avoid blocking the event loop
+            if inspect.iscoroutinefunction(self.client.upload_points):
+                await self.client.upload_points(
+                    collection_name=self.collection_name,
+                    points=point_structs,
+                    batch_size=64,
+                    parallel=2,
+                    wait=wait,
+                    method="grpc",
+                )
+            else:
+                upload_res = self.client.upload_points(
+                    collection_name=self.collection_name,
+                    points=point_structs,
+                    batch_size=64,
+                    parallel=2,
+                    wait=wait,
+                    method="grpc",
+                )
+                if inspect.isawaitable(upload_res):
+                    await upload_res
+
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             logger.info(
                 f"Successfully upserted {len(points)} points into '{self.collection_name}' "
@@ -71,6 +93,8 @@ class BatchIndexer:
                 points_count=len(points),
                 execution_time_ms=elapsed_ms,
             )
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Failed to upsert points batch into '{self.collection_name}': {e}")
             err_msg = f"Failed to upsert batch into '{self.collection_name}': {e}"

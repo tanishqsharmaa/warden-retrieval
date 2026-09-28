@@ -19,16 +19,18 @@ def prune_candidates(
     if not candidates:
         return []
 
-    max_score = candidates[0].rrf_score
+    # Sort descending by rrf_score to handle unsorted inputs robustly
+    sorted_candidates = sorted(candidates, key=lambda c: c.rrf_score, reverse=True)
+    max_score = sorted_candidates[0].rrf_score
     if max_score <= 0.0:
-        return list(candidates[:max_candidates])
+        return list(sorted_candidates[:max_candidates])
 
     threshold = prune_ratio * max_score
-    retained = [c for c in candidates if c.rrf_score >= threshold]
+    retained = [c for c in sorted_candidates if c.rrf_score >= threshold]
 
     # Safety guarantee: never return an empty list if input was non-empty
     if not retained:
-        retained = [candidates[0]]
+        retained = [sorted_candidates[0]]
 
     pruned = retained[:max_candidates]
     logger.debug(

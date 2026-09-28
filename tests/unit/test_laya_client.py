@@ -106,3 +106,47 @@ async def test_laya_client_empty_candidates():
     assert result.fallback_active is False
     assert result.passages == []
     mock_stub.Rerank.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_laya_client_circuit_breaker_trips_and_bypasses():
+    mock_stub = AsyncMock()
+    rpc_error = grpc.aio.AioRpcError(
+        code=grpc.StatusCode.DEADLINE_EXCEEDED,
+        initial_metadata=MagicMock(),
+        trailing_metadata=MagicMock(),
+        details="Timeout",
+    )
+    mock_stub.Rerank = AsyncMock(side_effect=rpc_error)
+
+    client = SpeculativeLayaClient(
+        stub=mock_stub, failure_threshold=3, cooldown_seconds=5.0
+    )
+    candidates = [make_cand(0, 0.050)]
+
+    # 3 failures should trip the circuit to OPEN
+    for _ in range(3):
+        res = await client.rerank("query", candidates)
+        assert res.fallback_active is True
+
+    assert client.is_circuit_open is True
+    call_count = mock_stub.Rerank.await_count
+    assert call_count == 3
+
+    # 4th call should immediately bypass Laya without making a network call
+    bypassed_res = await client.rerank("query", candidates)
+    assert bypassed_res.fallback_active is True
+    assert mock_stub.Rerank.await_count == call_count
+
+@pytest.mark.asyncio
+async def test_laya_client_empty_ranked_results_falls_back():
+    mock_stub = AsyncMock()
+    mock_response = RerankResponse(query="leave", ranked_results=[], inference_latency_ms=10.0)
+    mock_stub.Rerank = AsyncMock(return_value=mock_response)
+
+    client = SpeculativeLayaClient(stub=mock_stub)
+    candidates = [make_cand(0, 0.040)]
+    result = await client.rerank("leave", candidates)
+
+    assert result.fallback_active is True
+    assert len(result.passages) == 1
+    assert result.passages[0].doc_id == "DOC-0"

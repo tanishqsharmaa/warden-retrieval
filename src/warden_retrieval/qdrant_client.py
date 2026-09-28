@@ -24,7 +24,8 @@ class QdrantClientManager:
                     grpc_port=self.settings.QDRANT_GRPC_PORT,
                     port=self.settings.QDRANT_HTTP_PORT,
                     prefer_grpc=True,
-                    timeout=5.0,
+                    pool_size=self.settings.QDRANT_POOL_SIZE,
+                    timeout=5,
                 )
             except Exception as e:
                 logger.error(f"Failed to connect to Qdrant cluster: {e}")

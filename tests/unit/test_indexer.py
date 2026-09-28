@@ -76,3 +76,18 @@ async def test_index_points_qdrant_error_propagates():
     )
     with pytest.raises(QdrantUnavailableError):
         await indexer.index_points([point], wait=False)
+
+@pytest.mark.asyncio
+async def test_index_points_invalid_role_tags_raises():
+    mock_client = AsyncMock()
+    indexer = BatchIndexer(client=mock_client, collection_name="warden_hr_policies")
+    point = PointData(
+        point_id="11111111-1111-1111-1111-111111111111",
+        doc_id="DOC-1",
+        chunk_index=0,
+        content="Test",
+        dense_vector=[0.1] * 768,
+        role_tags=["InvalidRole"],
+    )
+    with pytest.raises(ValueError, match="Invalid role_tags"):
+        await indexer.index_points([point], wait=False)

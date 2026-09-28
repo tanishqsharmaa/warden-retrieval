@@ -3,6 +3,7 @@ import time
 from typing import Optional
 
 import grpc
+from warden_shared.errors import QdrantUnavailableError
 from warden_shared.proto.v1.retrieval_pb2 import (
     IndexBatchRequest,
     IndexBatchResponse,
@@ -62,11 +63,19 @@ class RetrievalServiceServicerImpl(RetrievalServiceServicer):
         final_limit = request.final_rerank_limit or self.settings.RERANK_LIMIT_DEFAULT
 
         # 1. Early-binding hybrid search against Qdrant
-        raw_candidates = await self.search_engine.search(
-            query_text=request.query_text,
-            caller_role=request.caller_role,
-            top_k=top_k,
-        )
+        try:
+            raw_candidates = await self.search_engine.search(
+                query_text=request.query_text,
+                caller_role=request.caller_role,
+                top_k=top_k,
+            )
+        except QdrantUnavailableError as e:
+            logger.error(f"Datastore unavailable during retrieval: {e}")
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                e.detail or "Qdrant datastore unavailable",
+            )
+            return RetrieveResponse()
 
         # 2. Dynamic candidate score pruning (40% drop-off threshold, <=10 chunks)
         pruned_candidates = prune_candidates(
@@ -129,12 +138,20 @@ class RetrievalServiceServicerImpl(RetrievalServiceServicer):
         self, request: IndexBatchRequest, context: grpc.aio.ServicerContext
     ) -> IndexBatchResponse:
         """Indexes a batch of vectorized points from upstream warden-ingestion."""
-        result = await self.indexer.index_points(request.points, wait=request.wait)
-        return IndexBatchResponse(
-            status=result.status,
-            points_count=result.points_count,
-            execution_time_ms=result.execution_time_ms,
-        )
+        try:
+            result = await self.indexer.index_points(request.points, wait=request.wait)
+            return IndexBatchResponse(
+                status=result.status,
+                points_count=result.points_count,
+                execution_time_ms=result.execution_time_ms,
+            )
+        except QdrantUnavailableError as e:
+            logger.error(f"Datastore unavailable during index batch: {e}")
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                e.detail or "Qdrant datastore unavailable",
+            )
+            return IndexBatchResponse()
 
 def create_grpc_server(
     servicer: RetrievalServiceServicerImpl,

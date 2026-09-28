@@ -19,9 +19,17 @@ class RawCandidate:
 class HybridSearchEngine:
     """Executes hybrid vector + lexical search against Qdrant with early-binding ACL filtering."""
 
-    def __init__(self, client: AsyncQdrantClient, collection_name: str) -> None:
+    def __init__(
+        self,
+        client: AsyncQdrantClient,
+        collection_name: str,
+        dense_embedder: Any = None,
+        sparse_embedder: Any = None,
+    ) -> None:
         self.client = client
         self.collection_name = collection_name
+        self.dense_embedder = dense_embedder
+        self.sparse_embedder = sparse_embedder
 
     async def search(
         self,
@@ -33,6 +41,30 @@ class HybridSearchEngine:
         sparse_values: Optional[list[float]] = None,
     ) -> list[RawCandidate]:
         """Executes access-controlled hybrid retrieval with native Reciprocal Rank Fusion (RRF)."""
+        # Generate dense and sparse query embeddings if embedders are configured
+        if dense_vector is None and self.dense_embedder is not None:
+            try:
+                dense_res = list(self.dense_embedder.embed([query_text]))
+                if dense_res:
+                    first = dense_res[0]
+                    dense_vector = list(first.tolist() if hasattr(first, "tolist") else first)
+            except Exception as e:
+                logger.warning(f"Dense query embedding failed: {e}")
+
+        if (
+            sparse_indices is None
+            and sparse_values is None
+            and self.sparse_embedder is not None
+        ):
+            try:
+                sparse_res = list(self.sparse_embedder.embed([query_text]))
+                if sparse_res:
+                    s_item = sparse_res[0]
+                    sparse_indices = list(getattr(s_item, "indices", []))
+                    sparse_values = list(getattr(s_item, "values", []))
+            except Exception as e:
+                logger.warning(f"Sparse BM25 query embedding failed: {e}")
+
         # Enforce early-binding ACL security filter
         query_filter = models.Filter(
             must=[

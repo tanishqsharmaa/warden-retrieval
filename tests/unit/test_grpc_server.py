@@ -127,6 +127,40 @@ async def test_grpc_index_batch_success():
     mock_indexer.index_points.assert_awaited_once_with(request.points, wait=False)
 
 @pytest.mark.asyncio
+async def test_grpc_retrieve_qdrant_error_aborts_unavailable():
+    from warden_shared.errors import QdrantUnavailableError
+
+    mock_search = AsyncMock()
+    mock_search.search.side_effect = QdrantUnavailableError("Qdrant down")
+    servicer = RetrievalServiceServicerImpl(
+        search_engine=mock_search,
+        laya_client=AsyncMock(),
+        indexer=AsyncMock(),
+    )
+    request = RetrieveRequest(query_text="health", caller_role="Employee")
+    context = AsyncMock()
+    await servicer.Retrieve(request, context)
+    context.abort.assert_awaited_once()
+    assert context.abort.call_args[0][0] == grpc.StatusCode.UNAVAILABLE
+
+@pytest.mark.asyncio
+async def test_grpc_index_qdrant_error_aborts_unavailable():
+    from warden_shared.errors import QdrantUnavailableError
+
+    mock_indexer = AsyncMock()
+    mock_indexer.index_points.side_effect = QdrantUnavailableError("Qdrant timeout")
+    servicer = RetrievalServiceServicerImpl(
+        search_engine=AsyncMock(),
+        laya_client=AsyncMock(),
+        indexer=mock_indexer,
+    )
+    request = IndexBatchRequest(points=[PointData(point_id="1")], wait=False)
+    context = AsyncMock()
+    await servicer.IndexBatch(request, context)
+    context.abort.assert_awaited_once()
+    assert context.abort.call_args[0][0] == grpc.StatusCode.UNAVAILABLE
+
+@pytest.mark.asyncio
 async def test_create_grpc_server():
     servicer = RetrievalServiceServicerImpl(AsyncMock(), AsyncMock(), AsyncMock())
     server = create_grpc_server(servicer=servicer, port=50051)
